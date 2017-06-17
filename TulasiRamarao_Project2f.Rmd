@@ -1,0 +1,558 @@
+---
+title: \textcolor{blue}{DATA643 PROJECT 2}
+author: "Tulasi Ramarao"
+date: "6/16/2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+ 
+    
+## Description 
+This system recommends movies to customers. Two recommendation approaches implemented are:   
+User based collaborative filtering (UBCF) and Item based collaborative filtering (IBCF).   
+   
+These approaches are evaluated and compared using different algorithms, normalization techiques, similarity methods and neighborhood sizes. The recommenderlab library is used to accomplish this task.  
+
+## DataSet
+The dataset from https://grouplens.org/datasets/movielens/ listed under *Recommended for Education and Research* is downloaded. This dataset contains 100,000 ratings for 9,000 movies by 700 users. The ratings are on the scale of 0-5. 
+
+
+
+```{r,echo=FALSE}
+# echo false is not to display the r code
+#install_github("mhahsler/recommenderlab")
+#install.packages("recosystem")
+
+
+suppressWarnings(suppressMessages(library(dplyr)))
+suppressWarnings(suppressMessages(library(tidyr)))
+#require(devtools)
+suppressWarnings(suppressMessages(library(ggplot2)))
+
+#install_github("mhahsler/recommenderlab")
+suppressWarnings(suppressMessages(library("recommenderlab")))
+#suppressWarnings(suppressMessages(library("recosystem")))
+suppressWarnings(suppressMessages(library(xtable)))
+suppressWarnings(suppressMessages(library(knitr)))
+
+
+
+```
+
+Load the downloaded data from csv files.
+
+```{r cars}
+set.seed(3445) # to keep #s from the results the same
+
+# Set the working directory
+setwd("/Users/tulasiramarao/Documents/Tulasi/CUNYProjects/DATA643/RPrograms")
+
+# load data from local drive
+dfmovies <- read.csv("MovieRatingsData/ml-latest-small/movies.csv", header = TRUE, sep = ",",
+                   stringsAsFactors = FALSE, encoding = "UTF-8")
+dfratings <- read.csv("MovieRatingsData/ml-latest-small/ratings.csv", header = TRUE, sep =",",
+                    stringsAsFactors = FALSE)
+
+colnames(dfratings)
+
+```
+   
+Select the relevant columns by using numbers to generalize the subset method for other datasets.
+
+```{r}
+
+colnames(dfratings)
+myratings <- subset(dfratings,select = c(1,2,3))
+#colnames(myratings)
+
+
+```
+   
+
+Using dplyr to reformat - making rating to be the values in the matrix; user as rows, movies as columns. Also converting the dataframe to matrix to feed to the recommenderlab library. 
+  
+```{r}
+
+reformatted.df <- myratings %>%
+  spread(key = movieId, value = rating) %>%
+  as.matrix()
+
+# Remove first column - userid ( rows are users so no need for userid)
+mydf = reformatted.df[,-1]  # Note: Not using subset to make this a generalized code
+
+```
+   
+Reduce matrix size by converting the matrix to a readRating matrix ( from the recommenderlab) coerce into a realRatingMAtrix. This will greatly reduce the file size as shown below.
+    
+```{r}
+
+mydf <- as(mydf, "realRatingMatrix")
+
+# look at dimension & size 
+#171 9066
+# 1.7 MB
+dim(mydf)
+
+# Originally it was 46.0 MB
+#171 9066
+dim(reformatted.df) 
+
+```
+   
+The following image displays the heatmap of the rating matrix. The white area in the top right region is because the row and the column are sorted.
+
+```{r}
+
+image(sample(mydf,500),main="Raw ratings")
+```
+   
+and the following image displays the histogram of the ratings of scale 0-5
+
+```{r}
+qplot(getRatings((mydf),binwidth = 45, main ="Histogram of ratings", xlab = "Rating"))
+
+summary(getRatings(mydf)) # skewed to the right
+
+```
+
+
+
+## Data preparation: 
+Data is prepared based on instructions under Chapter 3 of "Building a recommendation system with R" - from Suresh Gorakala)
+    
+The movies dataset contains movies that have been viewed only a few times with ratings biased because of the lack of datapoints. Also the users rated a few movies making the ratings biased also. 
+So its necessary to have a required minimum of users and movies. So we will define ratings_movies containing the matrix - with uesers that have rated at least x movies and movies that have been watched at least y times. 
+
+```{r}
+# Movies viewed > 10 times
+ratings_movies <- mydf[,colCounts(mydf) > 10]
+
+# Creates a 671 x 2083 rating matrix of class ‘realRatingMatrix’ with 80295 ratings.
+ratings_movies
+
+```
+   
+     
+Chapter 4 uses the evaluationScheme to automatically split dataset into Testing and Training sets. So, using this tool to split ratings_movies into 80% and 20%. 
+
+```{r}
+items_to_keep <- 5
+percentage_training <- 0.8
+rating_threshold <- 3
+n_eval <- 1
+
+eval_sets <- evaluationScheme(data = ratings_movies, method ="split", train = percentage_training, given = items_to_keep, goodRating = rating_threshold) #, k = n_eval)
+#eval_sets
+
+size_sets <- sapply(eval_sets@runsTrain, length)
+size_sets
+
+```
+   
+## Splitting data   
+  
+
+To make prediction of ratings, we need to build a recommender. The following sets were extracted by using getData:   
+  
+Train: The training set   
+Known: Test set with the item to build the recommendation  
+Unknown: Test set to test the recommendation 
+
+```{r}
+getData(eval_sets, "train")
+
+```
+   
+Its a realRatingMatrix object, and so nrows and ncolumns can be applied to it. 
+
+```{r}
+nrow(getData(eval_sets,"train"))/nrow(ratings_movies)
+
+```
+    
+80% of data is in the training set as expected. 
+
+```{r}
+getData(eval_sets, "known")
+getData(eval_sets, "unknown")
+
+nrow(getData(eval_sets,"known"))/nrow(ratings_movies)
+
+```
+
+They have about the rest of 20% data in the test set.   
+
+```{r}
+unique(rowCounts(getData(eval_sets,"known")))
+
+qplot(rowCounts(getData(eval_sets,"unknown")))  +geom_histogram(binwidth = 10) + ggtitle("unknown items by the user")
+
+```
+
+The numbers of movies per user varies a lot as expected. 
+
+## Recommendation Algorithms:
+Two recommendation algorithms considered are:    
+Used based as well as the Item based colloborative filtering.   
+
+#### I. User-Based Colloborative Filtering:   
+This algorithm groups users according to their history of ratings and recommends an item that a user similar to this user (in the same group) liked. So, if user A liked Movie 1,2 and 3 and user B liked Movie 1 and 2, then Movie 3 is a good one to recommend to user B.The assumption of UBCF is that similar users will rate movies similarly. So, the ratings are predicted by first finding a neighborhood of similar users and then aggregating the user ratings to form a prediction.   
+    
+Popular measures used are Pearson and cosine distance similarity. 
+
+
+
+```{r}
+#Description of UBCF
+recommenderRegistry$get_entry('UBCF', dataType='realRatingMatrix')
+```
+   
+#### a) Optimizing a numeric parameter ( Neighborhood size):   
+    
+Recommendation models contain a numeric parameter that takes account of the k-closest users/items. We can optimize k, by testing different values of a numeric parameter. So, we can get the value we want to proceed testing with. Default k value is 30. We can explore ranges from 10 and 70. Building  and evaluating the models:  
+
+```{r}
+vector_k <- c(10, 20, 30,40,50,60,70)
+records <- c(5, 10, 15, 20, 25)
+model_name <- "UBCF"
+method_name <- "Cosine"
+
+#define a list of models to evaluate by using lapply( distance metric is cosine )
+models_to_evaluate <- lapply(vector_k, function(k) {
+  list(name= model_name, param = list(normalize = "Z-score", method = method_name,nn=k))
+  
+})
+
+names(models_to_evaluate) <- paste0(("UBCF_k_"),vector_k)
+list_results <- evaluate(x=eval_sets,method = models_to_evaluate, n = vector_k,progress = FALSE)  
+
+plot(list_results, annotate = 1, legend ="topleft") 
+title("ROC curve for different k values")
+
+
+
+```
+
+This evaluation took about 0.02 seconds for each iteration.  
+
+The best performing can be identified by building a chart for these values with the ROC curve. ROC curve has the best performance for K = 70. So this value will be used in the neighborhood is ideal for all calculations.
+
+Now a similarity matrix is calculated containing all user-to-user similarities using Pearson and Cosine similary measures.   
+   
+```{r}
+model_to_evaluate <- "UBCF"
+model_parameters <- list(normalize = "Z-Score", method="Cosine", nn=70)
+ 
+model_cosine <- Recommender(getData(eval_sets,"train"),model_to_evaluate,param=model_parameters)
+
+prediction_cosine <- predict(model_cosine,getData(eval_sets,"known"),type="ratings")
+
+rmse_cosine <- calcPredictionAccuracy(prediction_cosine, getData(eval_sets, "unknown"))[1]
+rmse_cosine
+
+```
+
+#### b. Distance methods:   
+   
+This method gives measurement of the similarity between users/items based on the distance between them.Popular models are pearson, jaccard and cosine.   
+
+```{r}
+model_to_evaluate <- "UBCF"
+kval <- 50
+valList <- c(1, 5, 10, 15, 20, 25)
+
+model_parameters1 <- list(normalize = "Z-score",method="Cosine",nn=kval)
+model_parameters2 <- list(normalize = "Z-score",method="Pearson",nn=kval)
+model_parameters3 <- list(normalize = "Z-score",method="jaccard",nn=kval)
+
+
+distItem <- list(
+   "Cosine" = list(name=model_to_evaluate, param=model_parameters1),
+   "Pearson" = list(name=model_to_evaluate, param=model_parameters2),
+   "Jaccard" = list(name=model_to_evaluate, param=model_parameters3)
+   
+)
+
+dist_resultsUBCF <- evaluate(eval_sets, distItem, n=valList)
+
+
+```
+
+
+```{r}
+plot(x=dist_resultsUBCF, y ="ROC")
+
+```
+
+From the ROC curve, it can be seen that the performance was best when using the Pearson algorithm, as it can be seen at the top of the screen.    
+
+
+```{r}
+
+# Draw the precision/Recall curve
+plot(x = dist_resultsUBCF, y = "prec/rec", annotate = 1)
+
+```
+
+Jaccard performed best in the Precision/Recall curve as it can be seen at the top of the screen.   
+    
+So calculate the RMSE for both Jaccard and Pearson to compare and choose the best one.   
+   
+
+```{r}
+# Calculate RMSE for both Jaccard and Pearson
+
+# First Pearson
+# use k=70 as determined from the ROC curve above for choosing the neighborhood 
+model_to_evaluate <- "UBCF"
+model_parameters <- list(normalize = "Z-Score", method="Pearson", nn=70)
+ 
+model_pear <- Recommender(getData(eval_sets,"train"),model_to_evaluate,param=model_parameters)
+
+prediction_pear <- predict(model_pear,getData(eval_sets,"known"),type="ratings")
+
+rmse_pear <- calcPredictionAccuracy(prediction_pear, getData(eval_sets, "unknown"))[1]
+rmse_pear
+#0.9383786 
+
+
+# Next Jaccard
+# use k=70 as determined from the ROC curve above for choosing the neighborhood 
+model_to_evaluate <- "UBCF"
+model_parameters <- list(normalize = "Z-Score", method="jaccard", nn=70)
+ 
+model_jac <- Recommender(getData(eval_sets,"train"),model_to_evaluate,param=model_parameters)
+
+prediction_jac <- predict(model_jac,getData(eval_sets,"known"),type="ratings")
+
+rmse_jac <- calcPredictionAccuracy(prediction_jac, getData(eval_sets, "unknown"))[1]
+rmse_jac
+#0.974639
+
+
+```
+
+Pearson RMSE is lower and hence is better than Pearson.   
+   
+#### c) Normalization method:   
+   
+Data needs to be normalized before applying any algorithm. (normalization is done here by taking user’s averages - which is mean ratings of every user subtracted from known ratings)
+    
+Use normalization method for Z score using center and z-score parameters to feed the recommenderlab.   
+
+
+```{r}
+alg_dist <- list(
+   "center" = list(name="UBCF", param=list(normalize = "center",method="Cosine",nn=70)),
+   "Zscore" = list(name="UBCF", param=list(normalize = "Z-score",method="Cosine",nn=70))
+)
+
+dist_resultsUBCF <- evaluate(eval_sets, alg_dist, n=c(1, 5, 10, 15, 20, 25))
+
+```
+   
+Now plot the ROC and the precision curve to compare and choose the best between center and z-score methods.   
+    
+```{r}
+
+#plot ROC
+plot(x = dist_resultsUBCF, y = "ROC")
+ 
+# Draw the precision curve
+plot(x = dist_resultsUBCF, y = "prec", annotate = 1)
+ 
+  
+```
+
+The Z Score is much better at many of these level of recommendations.    
+      
+
+##II. Item-Based Collaborative-Filtering Recommender(IBCF):   
+This is a model based recommender based on the relationship between items inferred from the rating matrix. This model assumes that users prefer movies/items that are similar to other items they like.   
+   
+
+```{r}
+#Description of IBCF
+recommenderRegistry$get_entry('IBCF', dataType='realRatingMatrix')
+
+```
+    
+####a) Optimizing a numeric paramter(( Neighborhood size)):   
+Recommendation models contain a numeric parameter that takes account of the k-closest users/items. We can optimize k, by testing different values of a numeric parameter. So, we can get the value we want to proceed testing with.    Default value of k is 30. We can explore ranges from 5 and 70:     
+
+
+```{r}
+vector_k <- c(10, 20, 30,40,50,60,70)
+records <- c(5, 10, 15, 20, 25)
+model_name <- "IBCF"
+method_name <- "Cosine"
+
+#define a list of models to evaluate by using lapply( distance metric is cosine )
+models_to_evaluate <- lapply(vector_k, function(k) {
+  list(name= model_name, param = list(normalize = "Z-score", method = method_name,k=k))
+  
+})
+
+names(models_to_evaluate) <- paste0(("IBCF_k_"),vector_k)
+list_results <- evaluate(x=eval_sets,method = models_to_evaluate, n = vector_k,progress = FALSE)  
+
+plot(list_results, annotate = 1, legend ="topleft") 
+title("ROC curve for different k values")
+
+
+
+```
+   
+This evaluation took a long time to run about 50 seconds for each iteration.    
+It can be seen from the ROC curves that the best performance is for k=30. So including 30 items in the neighborhood is ideal for all calculations.   
+
+
+Now a similarity matrix is calculated containing all item-to-item similarities using Pearson and Cosine similary measures.   
+
+```{r}
+# k =30 determined from the ROC curve above for choosing the neighborhood 
+model_to_evaluate <- "UBCF"
+model_parameters <- list(normalize = "Z-Score", method="Cosine", nn=30)
+ 
+model_cosine <- Recommender(getData(eval_sets,"train"),model_to_evaluate,param=model_parameters)
+
+
+prediction_cosine <- predict(model_cosine,getData(eval_sets,"known"),type="ratings")
+
+rmse_cosine <- calcPredictionAccuracy(prediction_cosine, getData(eval_sets, "unknown"))[1]
+rmse_cosine
+
+
+```
+
+
+####b) Distance methods:    
+This method gives measurement of the similarity between users/items based on the distance between them.    
+Popular models are pearson and cosine.    
+
+```{r}
+model_to_evaluate <- "IBCF"
+kval <- 10
+valList <- c(1, 5, 10, 15, 20, 25)
+
+model_parameters1 <- list(normalize = "Z-score",method="Cosine",k=30)
+model_parameters2 <- list(normalize = "Z-score",method="Pearson",k=30)
+model_parameters3 <- list(normalize = "Z-score",method="jaccard",k=30)
+
+
+distItem <- list(
+   "Cosine" = list(name=model_to_evaluate, param=model_parameters1),
+   "Pearson" = list(name=model_to_evaluate, param=model_parameters2),
+   "Jaccard" = list(name=model_to_evaluate, param=model_parameters3)
+   
+)
+
+dist_resultsIBCF <- evaluate(eval_sets, distItem, n=valList)
+
+```
+   
+Plot the ROC and the Precision curves to compare the performances of Cosine, Pearson and Jaccard models.    
+
+```{r}
+#plot ROC
+plot(x = dist_resultsIBCF, y = "ROC",legend ="topleft")
+```
+
+From the ROC curve, it can be seen that Jaccard model did much better.   
+   
+```{r}
+# Draw the precision curve
+plot(x = dist_resultsIBCF, y = "prec", annotate = 1,legend ="topleft")
+ 
+```
+ 
+Jaccard model performed better again.     
+      
+   
+```{r}
+# Calculate RMSE
+
+# k = 30 determined from the ROC curve above for choosing the neighborhood 
+model_to_evaluate <- "IBCF"
+model_parameters <- list(normalize = "Z-Score", method="jaccard", k=kval)
+ 
+model_jac <- Recommender(getData(eval_sets,"train"),model_to_evaluate,param=model_parameters)
+
+prediction_jac <- predict(model_jac,getData(eval_sets,"known"),type="ratings")
+
+rmse_jac <- calcPredictionAccuracy(prediction_jac, getData(eval_sets, "unknown"))[1]
+rmse_jac
+
+
+```
+ 
+####c) Normalization method:   
+   
+Data needs to be normalized before applying any algorithm. (normalization is done here by taking user's averages - which is known ratings - mean rating of each user)   
+
+Using normalization method for Z score using center and z-score parameters to feed the recommenderlab.
+    
+```{r}
+# using k=30 the default anyways
+algorithms <- list(
+   "Z-score" = list(name="UBCF", param=list(normalize ="Z-score", method="Cosine",nn=30)),
+   "Center" = list(name="UBCF", param=list(normalize ="center", method="Cosine",nn=30))
+)
+
+# run algorithms, predict next n movies
+results <- evaluate(eval_sets, algorithms, n=c(1, 5, 10, 15, 20, 25))
+
+```
+   
+Compare the Z-score and the center methods for k=30. 
+
+```{r}
+
+#plot ROC
+plot(results, y = "ROC")
+
+# Draw the precision curve
+plot(x = results, y = "prec", annotate = 1)
+
+
+```
+
+ZScore seems to do better for normalization method.
+
+
+
+##Findings and Recommendations
+
+```{r}
+
+library(knitr)
+ubcf <- c('0.02','70','PEAR','0.9383886', 'Z-score')
+ibcf <-c('0.5','30','Jaccard','1.066576', 'Z-score')
+
+myresults.df <- data.frame(ubcf,ibcf)
+str(myresults.df)
+
+colnames(myresults.df) <- c("UBCF","IBCF")
+rownames(myresults.df) <- c("Compilation time in seconds/iteration:","Nearest Neighborhood:", "Best similarity using:","RMSE -Distance","Normalized using:")
+
+kable(myresults.df,  type = "html",caption="Results")
+
+```
+
+The User based Collaborative Filtering(UBCF) model performed better than the Item based Collaborative filtering(IBCF). UBCF is recommended over IBCF because of the following reasons.        
+    
+When calculating:      
+a) Distance methods - UBCF had lower RMSE  that indicated that UBCF was a better fit.  Distance had good reading for both Pearson and Jaccard models in the case of UBCF, however, the Pearson model had a better ROC and a precision curve. For IBCF, the Jaccard model performed better.    
+b) Normalization -  Z-Score performed well in both IBCF and UBCF.     
+c) The neightborhood size -  UBCF had the lowest RMSE for 70 and IBCF had the lowest RMSE for 30.     
+d) Compilation time - UBCF also ran much faster than IBCF.     
+  
+   
+####References:   
+The websites and the book below were used primarily to understand the material in order to create the recommenders.       
+https://github.com/ChicagoBoothML/MachineLearning_Fall2015/blob/master/Programming%20Scripts/MovieLens%20Movie%20Recommendation/R/MovieLens_MovieRecommendation.Rmd   
+https://rpubs.com/tarashnot/recommender_comparison   
+*Buiding a recommendation System with R - Suresh Gorakala,Michele Usuelli*     
+    
+    
